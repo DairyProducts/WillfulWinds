@@ -149,18 +149,24 @@ def load_data(
     return select_columns(df, columns, exclude).dropna()
 
 
-def split_by_date(df: pd.DataFrame, date: str | pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split time-indexed data into rows before ``date`` and rows on or after it.
+def split_by_date(
+    df: pd.DataFrame, date: str | pd.Timestamp, *, horizon_hours: int = 0
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split by forecast time, keeping every training outcome before the cutoff.
 
     Args:
         df: Data indexed by ``datetime``.
         date: First timestamp of the test set.
+        horizon_hours: Hours from the forecast time to the observed outcome.
 
     Returns:
         ``(train, test)``.
     """
+    if horizon_hours < 0:
+        raise ValueError("The forecast horizon must be nonnegative.")
     cutoff = pd.Timestamp(date)
-    return df[df.index < cutoff], df[df.index >= cutoff]
+    outcome_time = df.index + pd.Timedelta(hours=horizon_hours)
+    return df[outcome_time < cutoff], df[df.index >= cutoff]
 
 
 class Discretizer:
