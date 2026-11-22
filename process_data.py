@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from typing import TextIO
 
 import pandas as pd
 
@@ -28,13 +29,15 @@ WIND_GROUPS = {
 }
 
 TARGETS = ("pm25", "pm10")
+HORIZON_HOURS = 6
+TREND_HOURS = 3
 
 
-def load_raw(path: Path) -> pd.DataFrame:
+def load_raw(path: Path | TextIO) -> pd.DataFrame:
     """Read one raw station file onto a complete hourly time index.
 
     Args:
-        path: Path to a raw ``PRSA_Data_*.csv`` file.
+        path: A raw ``PRSA_Data_*.csv`` path or open text stream.
 
     Returns:
         DataFrame indexed by hourly ``datetime`` with renamed columns. Missing
@@ -70,28 +73,31 @@ def add_features(df: pd.DataFrame, horizon: int, trend_hours: int) -> pd.DataFra
     return out
 
 
-def process_station(path: Path, horizon: int, trend_hours: int) -> pd.DataFrame:
-    """Load, transform, and drop incomplete rows for one station.
+def process_station(
+    path: Path | TextIO, horizon: int = HORIZON_HOURS, trend_hours: int = TREND_HOURS
+) -> pd.DataFrame:
+    """Build hourly features for one station, preserving missing observations.
 
     Args:
-        path: Path to a raw station file.
+        path: A raw station CSV path or open text stream.
         horizon: Hours ahead for the ``*_future`` columns.
         trend_hours: Hours back for the ``*_change`` columns.
 
     Returns:
-        Clean station data with ``datetime`` as a column and no NA values.
+        Station data with ``datetime`` as a column. Callers can drop missing
+        values after choosing the predictors and outcome for an experiment.
     """
     df = add_features(load_raw(path), horizon, trend_hours)
     columns = ["station", "month", "hour", *RENAME.values(), "wd"]
     columns += [f"{c}_{s}" for s in ("change", "future") for c in TARGETS]
-    return df[columns].dropna().reset_index()
+    return df[columns].reset_index()
 
 
 def main() -> None:
     """Process every raw station file and print a row count per station."""
     parser = argparse.ArgumentParser(description="Process raw station files into data/.")
-    parser.add_argument("--horizon", type=int, default=6)
-    parser.add_argument("--trend-hours", type=int, default=3)
+    parser.add_argument("--horizon", type=int, default=HORIZON_HOURS)
+    parser.add_argument("--trend-hours", type=int, default=TREND_HOURS)
     args = parser.parse_args()
 
     paths = sorted(RAW_DIR.glob("PRSA_Data_*.csv"))

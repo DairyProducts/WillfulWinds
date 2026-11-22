@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import bayes_net as bn
+from process_data import HORIZON_HOURS
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 STATIONS = ["Nongzhanguan", "Changping"]
@@ -39,7 +40,7 @@ EDGES = [
 ]
 
 df = bn.load_data(STATIONS)
-train, test = bn.split_by_date(df, SPLIT_DATE)
+train, test = bn.split_by_date(df, SPLIT_DATE, horizon_hours=HORIZON_HOURS)
 train = bn.Discretizer().fit_transform(train)
 model = bn.build_network(train, EDGES)
 
