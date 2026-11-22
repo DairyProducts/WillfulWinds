@@ -55,3 +55,6 @@ for node in model.nodes():
 
 OUTPUT_DIR.mkdir(exist_ok=True)
 (OUTPUT_DIR / "CPT.md").write_text("# CPTs\n\n" + "\n".join(sections))
+bn.draw_network(
+    model, OUTPUT_DIR / "dag.png", highlight=["pm25_future", "pm10_future"], same_row=[["pm25", "pm10"]]
+)

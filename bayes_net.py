@@ -3,8 +3,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pandas as pd
+from matplotlib.figure import Figure
+from matplotlib.patches import FancyArrowPatch
+from matplotlib.textpath import TextPath
 from pgmpy.estimators import BayesianEstimator, MaximumLikelihoodEstimator
 from pgmpy.factors.discrete import DiscreteFactor, TabularCPD
 from pgmpy.inference import VariableElimination
@@ -445,3 +449,274 @@ def predict_proba(model: DiscreteBayesianNetwork, data: pd.DataFrame, target: st
     table = pd.concat([combos, pd.DataFrame(probs, columns=states)], axis=1)
     merged = data[evidence_cols].merge(table, on=evidence_cols, how="left")
     return merged[states].set_axis(data.index)
+
+
+Point = tuple[float, float]
+
+
+def assign_rows(model: DiscreteBayesianNetwork, same_row: Iterable[Iterable[str]] = ()) -> dict[str, int]:
+    """Give each node a row below all its parents, sharing rows within groups.
+
+    Args:
+        model: Network to lay out.
+        same_row: Groups of nodes to put on one row.
+
+    Returns:
+        Row number per node, with roots in row 0.
+
+    Raises:
+        ValueError: If a group cannot share a row, such as when a path
+            between two members runs through a node outside the group.
+    """
+    group_of = {node: i for i, group in enumerate(same_row) for node in group}
+    members: dict[int, list[str]] = {}
+    for node, i in group_of.items():
+        members.setdefault(i, []).append(node)
+    order = list(nx.topological_sort(model))
+    depth = dict.fromkeys(order, 0)
+    for _ in range(len(order) + 1):
+        changed = False
+        for node in order:
+            rows = [depth[p] + (group_of.get(p, -1) != group_of.get(node, -2)) for p in model.predecessors(node)]
+            if node in group_of:
+                rows += [depth[m] for m in members[group_of[node]]]
+            row = max(rows, default=0)
+            if row > depth[node]:
+                depth[node], changed = row, True
+        if not changed:
+            return depth
+    raise ValueError("The same_row groups conflict with the edge directions.")
+
+
+def layered_layout(
+    model: DiscreteBayesianNetwork,
+    widths: Mapping[str, float] | None = None,
+    gap: float = 0.3,
+    same_row: Iterable[Iterable[str]] = (),
+    sweeps: int = 8,
+    tries: int = 40,
+) -> tuple[dict[str, Point], dict[Edge, list[Point]]]:
+    """Place nodes in rows, with waypoints for edges that skip rows.
+
+    Args:
+        model: Network to lay out.
+        widths: Label width per node. Default 1.
+        gap: Minimum space between neighbors in a row.
+        same_row: Groups of nodes to keep side by side on one row.
+        sweeps: Ordering passes per try.
+        tries: Starting orders to try. The layout keeps the fewest crossings.
+
+    Returns:
+        ``(nodes, waypoints)``: ``(x, row)`` per node, and the ``(x, row)``
+        points between each edge's ends.
+    """
+    groups = [list(group) for group in same_row]
+    group_of = {node: i for i, group in enumerate(groups) for node in group}
+    depth = assign_rows(model, groups)
+    size = {node: 1.0 if widths is None else widths.get(node, 1.0) for node in model.nodes()}
+    graph = nx.DiGraph()
+    graph.add_nodes_from(model.nodes())
+    chains: dict[Edge, list[str]] = {}
+    ends: dict[str, tuple[str, str]] = {}
+    for parent, child in model.edges():
+        crossed = range(depth[parent] + 1, depth[child])
+        hidden = [f"\0{parent}->{child}@{r}" for r in crossed]
+        for r, name in zip(crossed, hidden):
+            depth[name], size[name], ends[name] = r, 0.0, (parent, child)
+        nx.add_path(graph, [parent, *hidden, child])
+        chains[(parent, child)] = hidden
+
+    n_rows = max(depth.values()) + 1
+    layers = [(r, r + 1) for r in range(n_rows - 1)]
+
+    def crossings(rows: list[list[str]]) -> int:
+        pos = {name: i for row in rows for i, name in enumerate(row)}
+        total = 0
+        for upper, _ in layers:
+            segs = sorted((pos[u], pos[v]) for u in rows[upper] for v in graph.successors(u) if depth[v] == upper + 1)
+            total += sum(c > a and d < b for i, (a, b) in enumerate(segs) for c, d in segs[i + 1 :])
+        return total
+
+    def reorder(row: list[str], pos: dict[str, int], neighbors) -> list[str]:
+        def mean_pos(name: str) -> float:
+            xs = [pos[n] for n in neighbors(name) if depth[n] != depth[name]]
+            return sum(xs) / len(xs) if xs else pos[name]
+
+        own = {name: mean_pos(name) for name in row}
+        block = dict(own)
+        for group in groups:
+            inside = [n for n in group if n in own]
+            if inside:
+                block.update(dict.fromkeys(inside, sum(own[n] for n in inside) / len(inside)))
+        return sorted(row, key=lambda n: (block[n], min(groups[group_of[n]]) if n in group_of else n, own[n]))
+
+    best, best_count = None, None
+    for trial in range(tries):
+        rows = [sorted(n for n in graph.nodes() if depth[n] == r) for r in range(n_rows)]
+        if trial:
+            rows = [list(rng.permutation(row)) for row in rows]
+        for sweep in range(sweeps):
+            downward = sweep % 2 == 0
+            for r in range(1, n_rows) if downward else range(n_rows - 2, -1, -1):
+                pos = {name: i for row in rows for i, name in enumerate(row)}
+                rows[r] = reorder(rows[r], pos, graph.predecessors if downward else graph.successors)
+        count = crossings(rows)
+        if best_count is None or count < best_count:
+            best, best_count = rows, count
+    rows = best
+
+    def pack(row: list[str], want: list[float]) -> dict[str, float]:
+        sep = [0.12 if a in ends and b in ends else (size[a] + size[b]) / 2 + gap for a, b in zip(row, row[1:])]
+        right, left = list(want), list(want)
+        for i in range(1, len(row)):
+            right[i] = max(right[i], right[i - 1] + sep[i - 1])
+        for i in range(len(row) - 2, -1, -1):
+            left[i] = min(left[i], left[i + 1] - sep[i])
+        return {name: (a + b) / 2 for name, a, b in zip(row, right, left)}
+
+    x: dict[str, float] = {}
+    for row in rows:
+        x.update(pack(row, [0.0] * len(row)))
+    for _ in range(10):
+        for row in rows:
+            want = []
+            for name in row:
+                if name in ends:
+                    parent, child = ends[name]
+                    t = (depth[name] - depth[parent]) / (depth[child] - depth[parent])
+                    want.append(x[parent] + t * (x[child] - x[parent]))
+                else:
+                    xs = [x[n] for n in nx.all_neighbors(graph, name)]
+                    want.append(sum(xs) / len(xs) if xs else x[name])
+            x.update(pack(row, want))
+
+    nodes = {node: (x[node], depth[node]) for node in model.nodes()}
+    waypoints = {edge: [(x[h], depth[h]) for h in hidden] for edge, hidden in chains.items()}
+    return nodes, waypoints
+
+
+def draw_network(
+    model: DiscreteBayesianNetwork,
+    path: Path | str,
+    title: str | None = None,
+    highlight: Iterable[str] = (),
+    same_row: Iterable[Iterable[str]] = (),
+    fontsize: float = 10,
+    dpi: int = 200,
+) -> Path:
+    """Save a top-down diagram of the network's DAG with straight arrows.
+
+    Args:
+        model: Network to draw. CPTs are optional.
+        path: Output file. The extension sets the format (``.png``, ``.svg``).
+        title: Optional heading.
+        highlight: Nodes to draw in orange.
+        same_row: Groups of nodes to draw side by side on one row.
+        fontsize: Label size in points.
+        dpi: Resolution for PNG output.
+
+    Returns:
+        The path written.
+
+    Raises:
+        ValueError: If the model has no nodes.
+    """
+    if not model.nodes():
+        raise ValueError("Cannot draw a network with no nodes.")
+    pad, gap, clearance, y_step, margin = 0.4, 0.35, 0.03, 1.0, 0.4
+    widths = {
+        node: (TextPath((0, 0), node, size=fontsize).get_extents().width + 2 * pad * fontsize) / 72
+        for node in model.nodes()
+    }
+    layout, _ = layered_layout(model, widths, gap=gap, same_row=same_row)
+    pos = {node: (x, -r * y_step) for node, (x, r) in layout.items()}
+    n_rows = max(r for _, r in layout.values()) + 1
+
+    fig = Figure(figsize=(1, 1))
+    ax = fig.add_axes((0, 0, 1, 1))
+    ax.set_axis_off()
+
+    def fit_canvas() -> None:
+        left = min(x - widths[n] / 2 for n, (x, _) in pos.items()) - margin
+        right = max(x + widths[n] / 2 for n, (x, _) in pos.items()) + margin
+        fig.set_size_inches(right - left, (n_rows - 1) * y_step + 2 * margin)
+        ax.set_xlim(left, right)
+        ax.set_ylim(-(n_rows - 1) * y_step - margin, margin)
+
+    fit_canvas()
+    marked = set(highlight)
+    boxes = {}
+    for node, xy in pos.items():
+        fill, edge = ("#fde2c8", "#c2410c") if node in marked else ("#e8eef7", "#334e7a")
+        boxes[node] = ax.text(
+            *xy, node, ha="center", va="center", fontsize=fontsize, zorder=3,
+            bbox={"boxstyle": f"round,pad={pad}", "facecolor": fill, "edgecolor": edge, "linewidth": 1.2},
+        )
+
+    to_data = ax.transData.inverted()
+    half = {}
+    for node, text in boxes.items():
+        (x0, y0), (x1, y1) = to_data.transform(text.get_bbox_patch().get_window_extent().get_points())
+        half[node] = ((x1 - x0) / 2, (y1 - y0) / 2)
+    edges = list(model.edges())
+
+    def attach() -> dict[tuple[Edge, int], Point]:
+        ports: dict[tuple[Edge, int], Point] = {}
+        outgoing: dict[str, list[tuple[float, Edge]]] = {node: [] for node in pos}
+        incoming: dict[str, list[tuple[float, Edge]]] = {node: [] for node in pos}
+        for parent, child in edges:
+            (px, py), (cx, cy) = pos[parent], pos[child]
+            if py == cy:
+                side = 1 if cx > px else -1
+                ports[((parent, child), -1)] = px + side * (half[parent][0] + clearance), py
+                ports[((parent, child), 1)] = cx - side * (half[child][0] + clearance), cy
+            else:
+                outgoing[parent].append((cx, (parent, child)))
+                incoming[child].append((px, (parent, child)))
+        for side, attached in ((-1, outgoing), (1, incoming)):
+            for node, ends in attached.items():
+                x0, y0 = pos[node]
+                for i, (_, edge) in enumerate(sorted(ends)):
+                    offset = half[node][0] * 0.7 * (2 * (i + 0.5) / len(ends) - 1)
+                    ports[(edge, side)] = x0 + offset, y0 + side * (half[node][1] + clearance)
+        return ports
+
+    for _ in range(10):
+        ports, moved = attach(), False
+        for node, (x0, y0) in pos.items():
+            hw, hh = half[node]
+            low, high = y0 - hh - 0.08, y0 + hh + 0.08
+            blocked = []
+            for edge in edges:
+                (ax_, ay), (bx, by) = ports[(edge, -1)], ports[(edge, 1)]
+                if node in edge or ay == by or max(ay, by) < low or min(ay, by) > high:
+                    continue
+                xs = [ax_ + (y - ay) * (bx - ax_) / (by - ay) for y in (max(low, min(ay, by)), min(high, max(ay, by)))]
+                blocked.append((min(xs) - hw - 0.08, max(xs) + hw + 0.08))
+            if not any(a < x0 < b for a, b in blocked):
+                continue
+            for other, (xo, yo) in pos.items():
+                if other != node and yo == y0:
+                    blocked.append((xo - half[other][0] - hw - gap, xo + half[other][0] + hw + gap))
+            spots = sorted({x0, *(v for span in blocked for v in span)}, key=lambda v: abs(v - x0))
+            pos[node] = next(v for v in spots if not any(a < v < b for a, b in blocked)), y0
+            moved = True
+        if not moved:
+            break
+
+    fit_canvas()
+    for node, text in boxes.items():
+        text.set_position(pos[node])
+    ports = attach()
+    for edge in edges:
+        ax.add_patch(FancyArrowPatch(
+            ports[(edge, -1)], ports[(edge, 1)], arrowstyle="-|>", mutation_scale=14,
+            shrinkA=0, shrinkB=0, color="#444444", linewidth=1.0, zorder=2,
+        ))
+    if title:
+        ax.set_title(title, fontsize=fontsize + 2)
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi, bbox_inches="tight", facecolor="white")
+    return out
