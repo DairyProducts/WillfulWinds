@@ -495,7 +495,7 @@ def layered_layout(
     same_row: Iterable[Iterable[str]] = (),
     sweeps: int = 8,
     tries: int = 40,
-) -> tuple[dict[str, Point], dict[Edge, list[Point]]]:
+) -> tuple[dict[str, tuple[float, int]], dict[Edge, list[tuple[float, int]]]]:
     """Place nodes in rows, with waypoints for edges that skip rows.
 
     Args:
@@ -551,7 +551,8 @@ def layered_layout(
         return sorted(row, key=lambda n: (block[n], min(groups[group_of[n]]) if n in group_of else n, own[n]))
 
     rng = np.random.default_rng(0)
-    best, best_count = None, None
+    best: list[list[str]] = []
+    best_count = None
     for trial in range(tries):
         rows = [sorted(n for n in graph.nodes() if depth[n] == r) for r in range(n_rows)]
         if trial:
