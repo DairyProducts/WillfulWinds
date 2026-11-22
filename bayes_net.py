@@ -550,6 +550,7 @@ def layered_layout(
                 block.update(dict.fromkeys(inside, sum(own[n] for n in inside) / len(inside)))
         return sorted(row, key=lambda n: (block[n], min(groups[group_of[n]]) if n in group_of else n, own[n]))
 
+    rng = np.random.default_rng(0)
     best, best_count = None, None
     for trial in range(tries):
         rows = [sorted(n for n in graph.nodes() if depth[n] == r) for r in range(n_rows)]
@@ -653,6 +654,7 @@ def draw_network(
             bbox={"boxstyle": f"round,pad={pad}", "facecolor": fill, "edgecolor": edge, "linewidth": 1.2},
         )
 
+    fig.draw_without_rendering()
     to_data = ax.transData.inverted()
     half = {}
     for node, text in boxes.items():
