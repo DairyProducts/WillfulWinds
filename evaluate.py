@@ -14,10 +14,19 @@ PERIODS = {
     "validation": (pd.Timestamp("2015-03-01"), pd.Timestamp("2016-03-01")),
     "test": (pd.Timestamp("2016-03-01"), pd.Timestamp("2017-03-01")),
 }
-PM = ["pm25", "pm10", "pm25_change", "pm10_change"]
 WEATHER = ["wd", "wspm", "rain"]
-WITH_WEATHER = [*PM, *WEATHER]
-VARIANTS = {"pm_only": PM, "weather_only": WEATHER, "pm_weather": WITH_WEATHER}
+WITH_WEATHER = list(dict.fromkeys(p for p, c in bn.EDGES if c in {f"{t}_future" for t in TARGETS}))
+VARIANTS = ["pm_only", "weather_only", "pm_weather"]
+
+
+def variants(target: str) -> dict[str, list[str]]:
+    """Split the target's DAG parents into PM-only, weather-only and combined inputs."""
+    parents = [p for p, c in bn.EDGES if c == target]
+    return {
+        "pm_only": [p for p in parents if p not in WEATHER],
+        "weather_only": [p for p in parents if p in WEATHER],
+        "pm_weather": parents,
+    }
 HORIZON = pd.Timedelta(hours=HORIZON_HOURS)
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 
@@ -86,7 +95,7 @@ def fit_target(train, scoring, pollutant):
     predictions["observed_elevated"] = cases[target].eq("elevated").to_numpy(dtype=int)
     predictions["p_training_rate"] = training[target].eq("elevated").mean()
     tables, notes = [], []
-    for name, inputs in VARIANTS.items():
+    for name, inputs in variants(target).items():
         model = bn.build_network(training, [(p, target) for p in inputs], prior="K2")
         forecasts = bn.predict_proba(model, cases[inputs], target)
         predictions[f"p_{name}"] = forecasts["elevated"].to_numpy()

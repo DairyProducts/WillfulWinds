@@ -20,6 +20,40 @@ DATA_DIR = Path(__file__).parent / "data"
 
 Edge = tuple[str, str]
 
+EDGES: list[Edge] = [
+    ("month", "temp"),
+    ("hour", "temp"),
+    ("month", "dewp"),
+    ("month", "pres"),
+    ("dewp", "rain"),
+    ("hour", "wspm"),
+    ("station", "wspm"),
+    ("month", "wd"),
+    ("month", "pm25"),
+    ("month", "so2"),
+    ("month", "co"),
+    ("hour", "no2"),
+    ("temp", "o3"),
+    ("no2", "o3"),
+    ("pm25", "pm10"),
+    ("hour", "pm25_change"),
+    ("hour", "pm10_change"),
+    ("pm25", "pm25_future"),
+    ("pm25_change", "pm25_future"),
+    ("pm10", "pm25_future"),
+    ("pm10_change", "pm25_future"),
+    ("wd", "pm25_future"),
+    ("wspm", "pm25_future"),
+    ("rain", "pm25_future"),
+    ("pm10", "pm10_future"),
+    ("pm10_change", "pm10_future"),
+    ("pm25", "pm10_future"),
+    ("pm25_change", "pm10_future"),
+    ("wd", "pm10_future"),
+    ("wspm", "pm10_future"),
+    ("rain", "pm10_future"),
+]
+
 
 @dataclass(frozen=True)
 class Bins:
